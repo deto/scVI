@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from torch.distributions import Normal, kl_divergence as kl
 
 from scvi.models.log_likelihood import log_zinb_positive, log_nb_positive
-from scvi.models.modules import Encoder, DecoderSCVI
+from scvi.models.modules import SplitEncoder, Encoder, DecoderSCVI
 from scvi.models.utils import one_hot
 
 torch.backends.cudnn.benchmark = True
@@ -214,3 +214,62 @@ class VAE(nn.Module):
         reconst_loss = self._reconstruction_loss(x, px_rate, px_r, px_dropout)
 
         return reconst_loss + kl_divergence_l, kl_divergence
+
+
+# SplitVAE model
+class SplitVAE(VAE):
+    r"""Variational auto-encoder model.
+
+    Same as VAE but adds a split to partition the latent space
+    Adds two new parameters: n_inputA, and n_latentA
+        -- Yes, I know the names are bad...
+
+    :param n_input: Number of input genes
+    :param n_inputA: Number of input genes in the first Group
+    :param n_latentA: Number of latent factors in the first Group
+    :param n_batch: Number of batches
+    :param n_labels: Number of labels
+    :param n_hidden: Number of nodes per hidden layer
+    :param n_latent: Dimensionality of the latent space
+    :param n_layers: Number of hidden layers used for encoder and decoder NNs
+    :param dropout_rate: Dropout rate for neural networks
+    :param dispersion: One of the following
+
+        * ``'gene'`` - dispersion parameter of NB is constant per gene across cells
+        * ``'gene-batch'`` - dispersion can differ between different batches
+        * ``'gene-label'`` - dispersion can differ between different labels
+        * ``'gene-cell'`` - dispersion can differ for every gene in every cell
+
+    :param log_variational: Log variational distribution
+    :param reconstruction_loss:  One of
+
+        * ``'nb'`` - Negative binomial distribution
+        * ``'zinb'`` - Zero-inflated negative binomial distribution
+
+    Examples:
+        >>> gene_dataset = CortexDataset()
+        >>> vae = VAE(gene_dataset.nb_genes, n_batch=gene_dataset.n_batches * False,
+        ... n_labels=gene_dataset.n_labels)
+
+    """
+
+    def __init__(self, n_input: int, n_inputA: int, n_latentA: int,
+                 n_batch: int = 0, n_labels: int = 0,
+                 n_hidden: int = 128, n_latent: int = 10, n_layers: int = 1,
+                 dropout_rate: float = 0.1, dispersion: str = "gene",
+                 log_variational: bool = True, reconstruction_loss: str = "zinb",
+                 n_hidden_split: int = 128):
+
+        super(SplitVAE, self).__init__(n_input, n_batch, n_labels,
+                                       n_hidden, n_latent, n_layers,
+                                       dropout_rate, dispersion,
+                                       log_variational, reconstruction_loss)
+
+        # z encoder goes from the n_input-dimensional data to an n_latent-d
+        # latent space representation
+        self.z_encoder = SplitEncoder(n_input, n_latent,
+                                      n_inputA=n_inputA,
+                                      n_outputA=n_latentA,
+                                      n_layers=n_layers, n_hidden=n_hidden,
+                                      dropout_rate=dropout_rate,
+                                      n_hidden_split=n_hidden_split)

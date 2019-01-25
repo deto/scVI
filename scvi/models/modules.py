@@ -125,6 +125,90 @@ class Encoder(nn.Module):
         return q_m, q_v, latent
 
 
+# SplitEncoder
+class SplitEncoder(nn.Module):
+    r"""Encodes data of ``n_input`` dimensions into a latent space of ``n_output``
+    dimensions using a fully-connected neural network of ``n_hidden`` layers.
+
+    Different from standard encoder in that the input and output is split into
+    two groups
+
+    :param n_input: The total dimensionality of the input (data space)
+    :param n_inputA: The size of the first group (input)
+    :param n_output: The total dimensionality of the output (latent space)
+    :param n_outputA: The dimensionality of the first output group (latent space)
+    :param n_cat_list: A list containing the number of categories
+                       for each category of interest. Each category will be
+                       included using a one-hot encoding
+    :param n_layers: The number of fully-connected hidden layers
+    :param n_hidden: The number of nodes per hidden layer
+    :dropout_rate: Dropout rate to apply to each of the hidden layers
+    """
+
+    def __init__(self, n_input: int, n_output: int,
+                 n_inputA: int, n_outputA: int,
+                 n_cat_list: Iterable[int] = None, n_layers: int = 1,
+                 n_hidden: int = 128, dropout_rate: float = 0.1,
+                 n_hidden_split: int = 128):
+        super(SplitEncoder, self).__init__()
+
+        n_inputB = n_input - n_inputA
+        n_outputB = n_output - n_outputA
+
+        self.n_inputA = n_inputA
+
+        self.encoderA = FCLayers(n_in=n_inputA, n_out=n_hidden,
+                                 n_cat_list=n_cat_list, n_layers=n_layers,
+                                 n_hidden=n_hidden_split, dropout_rate=dropout_rate)
+
+        self.mean_encoderA = nn.Linear(n_hidden, n_outputA)
+        self.var_encoderA = nn.Linear(n_hidden, n_outputA)
+
+        self.encoderB = FCLayers(n_in=n_inputB, n_out=n_hidden,
+                                 n_cat_list=n_cat_list, n_layers=n_layers,
+                                 n_hidden=n_hidden, dropout_rate=dropout_rate)
+
+        self.mean_encoderB = nn.Linear(n_hidden, n_outputB)
+        self.var_encoderB = nn.Linear(n_hidden, n_outputB)
+
+    def reparameterize(self, mu, var):
+        return Normal(mu, var.sqrt()).rsample()
+
+    def forward(self, x: torch.Tensor, *cat_list: int):
+        r"""The forward computation for a single sample.
+
+         #. Encodes the data into latent space using the encoder network
+         #. Generates a mean \\( q_m \\) and variance \\( q_v \\) (clamped to \\( [-5, 5] \\))
+         #. Samples a new value from an i.i.d. multivariate normal \\( \\sim N(q_m, \\mathbf{I}q_v) \\)
+
+        :param x: tensor with shape (n_input,)
+        :param cat_list: list of category membership(s) for this sample
+        :return: tensors of shape ``(n_latent,)`` for mean and var, and sample
+        :rtype: 3-tuple of :py:class:`torch.Tensor`
+        """
+
+        S = self.n_inputA
+
+        # Parameters for latent distribution
+
+        qA = self.encoderA(x[:, :S], *cat_list)
+        q_mA = self.mean_encoderA(qA)
+        q_vA = torch.exp(self.var_encoderA(qA))  # (computational stability safeguard)torch.clamp(, -5, 5)
+        latentA = self.reparameterize(q_mA, q_vA)
+
+        qB = self.encoderB(x[:, S:], *cat_list)
+        q_mB = self.mean_encoderB(qB)
+        q_vB = torch.exp(self.var_encoderB(qB))  # (computational stability safeguard)torch.clamp(, -5, 5)
+        latentB = self.reparameterize(q_mB, q_vB)
+
+        # Join tensors together
+        q_m = torch.cat([q_mA, q_mB], dim=1)
+        q_v = torch.cat([q_vA, q_vB], dim=1)
+        latent = torch.cat([latentA, latentB], dim=1)
+
+        return q_m, q_v, latent
+
+
 # Decoder
 class DecoderSCVI(nn.Module):
     r"""Decodes data from latent space of ``n_input`` dimensions ``n_output``
